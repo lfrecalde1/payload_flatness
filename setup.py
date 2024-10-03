@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'quadrotor_flatness_node = payload_flatness.main_quadrotor_flatness:main',
+            'cbf_node = payload_flatness.main_perception_cbf:main',
         ],
     },
 )

@@ -8,8 +8,9 @@ import threading
 import os
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
-from payload_flatness import compute_flatness_states
-from payload_flatness import compute_flatness_states_old
+from payload_flatness import compute_flatness_quadrotor
+from payload_flatness import compute_flatness_quadrotor_old
+from payload_flatness import compute_flatness_payload
 from payload_flatness import fancy_plots_3, plot_states_position
 from payload_flatness import fancy_plots_4, plot_control_actions_reference, plot_states_quaternion
 import time
@@ -48,11 +49,20 @@ class FlatnessQuadrotorNode(Node):
         self.J = np.array([[self.Jxx, 0.0, 0.0], [0.0, self.Jyy, 0.0], [0.0, 0.0, self.Jzz]])
 
         self.dx = 0.1
-        self.dy = 0.5
-        self.dz = 1
+        self.dy = 0.2
+        self.dz = 0.5
         self.D = np.array([[self.dx, 0.0, 0.0], [0.0, self.dy, 0.0], [0.0, 0.0, self.dz]])
 
-        self.L = [self.mQ, self.Jxx, self.Jyy, self.Jzz, self.g, self.dx, self.dy, self.dz]
+        self.Lq = [self.mQ, self.Jxx, self.Jyy, self.Jzz, self.g, self.dx, self.dy, self.dz]
+
+        # Payload parameters
+        self.mL = 0.103
+        self.l = 0.5
+        self.dlx = 0.0
+        self.dly = 0.0
+        self.dlz = 0.0
+        self.Dl = np.array([[self.dlx, 0.0, 0.0], [0.0, self.dly, 0.0], [0.0, 0.0, self.dlz]])
+        self.Ll = [self.mL, self.l, self.g, self.dlx, self.dly, self.dlz]
 
         # Time of the system
         self.t_f = 10.0
@@ -60,13 +70,14 @@ class FlatnessQuadrotorNode(Node):
         self.t = np.arange(0, self.t_f + self.ts, self.ts)
 
         # Desired Trajectory parameters
-        self.p = 4.0  # Radius
-        self.w_c = 0.1 # Angular velocity
-        self.c = np.array([1.0, 1.0, 0.5])  # Center
+        self.p = 2.0  # Radius
+        self.w_c = 1 # Angular velocity
+        self.c = np.array([0.0, 0.0, 0.5])  # Center
 
         print("Computing Path")
-        self.hd, self.hd_p, self.hd_pp, self.hd_ppp, self.hd_pppp, self.qd, self.fd, self.wd = compute_flatness_states(self.L, self.t, self.p, self.w_c, self.c)
-        self.hd_old, self.hd_p_old, self.hd_pp_old, self.hd_ppp_old, self.hd_pppp_old, self.qd_old, self.fd_old, self.wd_old = compute_flatness_states_old(self.L, self.t, self.p, self.w_c, self.c)
+        self.hd, self.hd_p, self.hd_pp, self.hd_ppp, self.hd_pppp, self.qd, self.fd, self.wd = compute_flatness_quadrotor(self.Lq, self.t, self.p, self.w_c, self.c)
+        self.hd_old, self.hd_p_old, self.hd_pp_old, self.hd_ppp_old, self.hd_pppp_old, self.qd_old, self.fd_old, self.wd_old = compute_flatness_quadrotor_old(self.Lq, self.t, self.p, self.w_c, self.c)
+        compute_flatness_payload(self.Lq, self.Ll, self.t, self.p, self.w_c, self.c)
         print("Path Computed")
 
         # Define odometry publisher for the desired path

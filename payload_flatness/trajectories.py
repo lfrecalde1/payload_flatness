@@ -63,7 +63,60 @@ def ref_circular_trajectory(t, p, w_c, c):
     hd_pppp = np.vstack((xd_pppp, yd_pppp, zd_pppp))
     return hd, theta, hd_p, theta_p, hd_pp, hd_ppp, hd_pppp, theta_pp
 
-def compute_flatness_states(L, t, p, w_c, c):
+def ref_trajectory(t, p, w_c, c):
+    # Compute the desired Trajecotry of the system
+    # COmpute Desired Positions
+    cx = c[0]
+    cy = c[1]
+    cz = c[2]
+    aux = 2
+
+    xd = cx + p * np.sin(w_c*t)
+    yd = cy + p * np.sin(aux*w_c*t)
+    zd = cz + 0 * np.zeros((t.shape[0]))
+
+    # Compute velocities
+    xd_p =  p * w_c * np.cos(w_c * t)
+    yd_p =  p * aux * w_c * np.cos(aux*w_c * t)
+    zd_p = 0 * np.zeros((t.shape[0]))
+
+    # Compute acceleration
+    xd_pp = - p* w_c * w_c * np.sin(w_c * t)
+    yd_pp = - p * (aux * aux)* w_c * w_c * np.sin(aux *w_c * t) 
+    zd_pp = 0 * np.zeros((t.shape[0]))
+
+    # Compute jerk
+    xd_ppp = - p * w_c * w_c * w_c * np.cos(w_c * t)
+    yd_ppp = - p * (aux * aux * aux) * w_c * w_c * w_c * np.cos(aux * w_c * t) 
+    zd_ppp = 0 * np.zeros((t.shape[0]))
+
+    # Compute snap
+    xd_pppp = p * w_c * w_c * w_c * w_c * np.sin(w_c * t)
+    yd_pppp = p * (aux * aux * aux * aux) * w_c * w_c * w_c * w_c * np.sin(aux * w_c * t)
+    zd_pppp = 0 * np.zeros((t.shape[0]))
+
+    # Compute angular displacement
+    theta = 0 * np.zeros((t.shape[0]))
+
+    # Compute angular velocity
+    theta_p = 0 * np.zeros((t.shape[0]))
+    #theta = np.arctan2(yd_p, xd_p)
+    #theta = theta
+
+    # Compute angular velocity
+    #theta_p = (1. / ((yd_p / xd_p) ** 2 + 1)) * ((yd_pp * xd_p - yd_p * xd_pp) / xd_p ** 2)
+    #theta_p[0] = 0.0
+
+    theta_pp = 0 * np.zeros((theta.shape[0]))
+
+    hd = np.vstack((xd, yd, zd))
+    hd_p = np.vstack((xd_p, yd_p, zd_p))
+    hd_pp = np.vstack((xd_pp, yd_pp, zd_pp))
+    hd_ppp = np.vstack((xd_ppp, yd_ppp, zd_ppp))
+    hd_pppp = np.vstack((xd_pppp, yd_pppp, zd_pppp))
+    return hd, theta, hd_p, theta_p, hd_pp, hd_ppp, hd_pppp, theta_pp
+
+def compute_flatness_quadrotor(L, t, p, w_c, c):
 
     # Drone Parameters
     m = L[0]
@@ -80,7 +133,7 @@ def compute_flatness_states(L, t, p, w_c, c):
     Xw = np.array([[1.0], [0.0], [0.0]])
     Yw = np.array([[0.0], [1.0], [0.0]])
 
-    hd, theta, hd_p, theta_p, hd_pp, hd_ppp, hd_pppp, theta_pp = ref_circular_trajectory(t, p, w_c, c)
+    hd, theta, hd_p, theta_p, hd_pp, hd_ppp, hd_pppp, theta_pp = ref_trajectory(t, p, w_c, c)
 
     # Empty vector for the internal values
     alpha =  np.zeros((3, hd.shape[1]), dtype=np.double)
@@ -138,7 +191,46 @@ def compute_flatness_states(L, t, p, w_c, c):
         f[:, k] = np.dot(Zb[:, k], aux_z)
     return hd, hd_p, hd_pp, hd_ppp, hd_pppp, q, f, w
 
-def compute_flatness_states_old(L, t, p, w_c, c):
+def compute_flatness_payload(Lq, Ll, t, p, w_c, c):
+    # Function computes the orientation of the payload considering the unit vector from uadrotor to payload
+    mL = Ll[0]
+    l = Ll[1]
+    g = Ll[2]
+    dlx = Ll[3]
+    dly = Ll[4]
+    dlz = Ll[5]
+
+    # Matrix of drag parameters of the payload
+    Dl = np.array([[dlx, 0.0, 0.0], [0.0, dly, 0.0], [0.0, 0.0, dlz]])
+
+    # UNit Vector Z axis
+    Zw = np.array([[0.0], [0.0], [1.0]])
+
+    # Desired Trajectory
+    hd, theta, hd_p, theta_p, hd_pp, hd_ppp, hd_pppp, theta_pp = ref_trajectory(t, p, w_c, c)
+
+    # Empty variables for the system 
+    p = np.zeros((3, hd.shape[1]), dtype=np.double)
+    T = np.zeros((1, hd.shape[1]), dtype=np.double)
+    Tdot = np.zeros((1, hd.shape[1]), dtype=np.double)
+
+    # Quadrotor locations
+    hd_q = np.zeros((3, hd.shape[1]), dtype=np.double)
+    for k in range(0, hd.shape[1]):
+        # Orientation
+        aux = mL * hd_pp[:, k] + mL*g*Zw[:, 0] + Dl@hd_p[:, k]
+        aux_norm = np.linalg.norm(aux)
+
+        # Unit axis of the payload
+        p[:, k] = -(aux)/aux_norm
+        T[:, k] = aux_norm
+        Tdot[:, k] = -np.dot(mL*hd_ppp[:, k], p[:, k]) - np.dot(Dl@hd_pp[:, k], p[:, k])
+
+        
+        # Computing
+
+    return None
+def compute_flatness_quadrotor_old(L, t, p, w_c, c):
     print("Fernando")
     # Drone Parameters
     m = L[0]
@@ -153,7 +245,7 @@ def compute_flatness_states_old(L, t, p, w_c, c):
     # Inertial Frame 
     Zw = np.array([[0.0], [0.0], [1.0]])
 
-    hd, theta, hd_p, theta_p, hd_pp, hd_ppp, hd_pppp, theta_pp = ref_circular_trajectory(t, p, w_c, c)
+    hd, theta, hd_p, theta_p, hd_pp, hd_ppp, hd_pppp, theta_pp = ref_trajectory(t, p, w_c, c)
 
 
     # Desired Orientation matrix only yaw
@@ -197,14 +289,5 @@ def compute_flatness_states_old(L, t, p, w_c, c):
         r_d = R.from_matrix(R_d)
         quad_d_aux = r_d.as_quat()
         q[:, k] = np.array([quad_d_aux[3], quad_d_aux[0], quad_d_aux[1], quad_d_aux[2]])
-        if k > 0:
-            aux_dot = np.dot(q[:, k], q[:, k-1])
-            if aux_dot < 0:
-                q[:, k] = -q[:, k]
-            else:
-                q[:, k] = q[:, k]
-        else:
-            pass
-        q[:, k] = q[:, k]/np.linalg.norm(q[:, k])
         # Compute nominal force of the in the body frame
     return hd, hd_p, hd_pp, hd_ppp, hd_pppp, q, f, w
