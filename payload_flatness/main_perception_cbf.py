@@ -70,7 +70,7 @@ class PerceptionCBFNode(Node):
 
         self.payload_projection_publisher = self.create_publisher(PointStamped, '/quadrotor/payload/point_python', 10)
 
-        self.cbf_publisher = self.create_publisher(PointStamped, '/quadrotor/payload/cbf', 10)
+        self.cbf_publisher = self.create_publisher(PointStamped, '/quadrotor/payload/classic', 10)
 
         # Init Pose ofr quadrtor and payload 
         self.quadrotor_pose = Pose()
