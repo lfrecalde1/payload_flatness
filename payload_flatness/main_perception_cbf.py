@@ -3,15 +3,17 @@ import rclpy
 from rclpy.node import Node
 import numpy as np
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Pose, PointStamped
+from geometry_msgs.msg import Pose, PointStamped, Twist
 from payload_flatness import rotation_casadi, rotation_inverse_casadi, quaternion_multiplication_casadi
 import casadi as ca
+from payload_flatness import export_model
 
 
 # Functions From Casadi
 rot = rotation_casadi()
 inverse_rot = rotation_inverse_casadi()
 quat_multi = quaternion_multiplication_casadi()
+model, f_x, g_x, h_f, distance_f, dh_dx_f, ddistance_dx_f = export_model()
 
 class PerceptionCBFNode(Node):
     def __init__(self):
@@ -54,7 +56,7 @@ class PerceptionCBFNode(Node):
         self.get_logger().info(f'Camera orientation: ({self.camera_ori_x}, {self.camera_ori_y}, {self.camera_ori_z}, {self.camera_ori_w})')
 
         # Max norm for the perception staff
-        self.r_max = 0.4
+        self.r_max = 0.3
         self.r_max_square = self.r_max*self.r_max
 
         # Additional setup can be done here, using the retrieved parameters
@@ -64,17 +66,19 @@ class PerceptionCBFNode(Node):
         self.q_bc = np.array([self.camera_ori_w, self.camera_ori_x, self.camera_ori_y, self.camera_ori_z])
 
         # Subscriptions to topics
-        self.quadrotor_odom_subscriber = self.create_subscription(Odometry, '/quadrotor/odom', self.quadrotor_odom_callback, 10)
+        self.quadrotor_odom_subscriber = self.create_subscription(Odometry, f'/{self.quadrotor_name}/odom', self.quadrotor_odom_callback, 10)
 
-        self.payload_odom_subscriber = self.create_subscription(Odometry, '/quadrotor/payload/odom', self.payload_odom_callback, 10)
+        self.payload_odom_subscriber = self.create_subscription(Odometry, f'/{self.quadrotor_name}/payload/odom', self.payload_odom_callback, 10)
 
-        self.payload_projection_publisher = self.create_publisher(PointStamped, '/quadrotor/payload/point_python', 10)
+        self.payload_projection_publisher = self.create_publisher(PointStamped, f'/{self.quadrotor_name}/payload/point_python', 10)
 
-        self.cbf_publisher = self.create_publisher(PointStamped, '/quadrotor/payload/classic', 10)
+        self.cbf_publisher = self.create_publisher(PointStamped, f'/{self.quadrotor_name}/payload/cbf', 10)
 
         # Init Pose ofr quadrtor and payload 
         self.quadrotor_pose = Pose()
+        self.quadrotor_twist = Twist()
         self.payload_pose = Pose()
+        self.payload_twist = Twist()
 
         # Timer to call the projection function at 100 Hz
         self.timer = self.create_timer(0.01, self.projection)
@@ -83,6 +87,9 @@ class PerceptionCBFNode(Node):
         # Update the quadrotor pose with data from the Odometry message
         self.quadrotor_pose.position = msg.pose.pose.position
         self.quadrotor_pose.orientation = msg.pose.pose.orientation
+
+        self.quadrotor_twist.linear = msg.twist.twist.linear
+        self.quadrotor_twist.angular = msg.twist.twist.angular
         #self.get_logger().info(f'Updated quadrotor pose: {self.quadrotor_pose}')
         return None
 
@@ -90,43 +97,48 @@ class PerceptionCBFNode(Node):
         # Update the payload pose with data from the Odometry message
         self.payload_pose.position = msg.pose.pose.position
         self.payload_pose.orientation = msg.pose.pose.orientation
+
+        self.payload_twist.linear = msg.twist.twist.linear
+        self.payload_twist.angular = msg.twist.twist.angular
         #self.get_logger().info(f'Updated payload pose: {self.payload_pose}')
         return None
     
     def projection(self):
         # Get values of the system
-        # Internal states of the quadrotor
-        q_wb = np.array([self.quadrotor_pose.orientation.w, self.quadrotor_pose.orientation.x, self.quadrotor_pose.orientation.y, self.quadrotor_pose.orientation.z])
-        w_t_wb = np.array([self.quadrotor_pose.position.x, self.quadrotor_pose.position.y, self.quadrotor_pose.position.z])
+        # Casadi Function
+        X = np.array([self.payload_pose.position.x, self.payload_pose.position.y, self.payload_pose.position.z,
+                    self.payload_twist.linear.x, self.payload_twist.linear.y, self.payload_twist.linear.z,
+                    self.quadrotor_pose.position.x, self.quadrotor_pose.position.y, self.quadrotor_pose.position.z,
+                    self.quadrotor_twist.linear.x, self.quadrotor_twist.linear.y, self.quadrotor_twist.linear.z,
+                    self.quadrotor_pose.orientation.w, self.quadrotor_pose.orientation.x, self.quadrotor_pose.orientation.y, self.quadrotor_pose.orientation.z,
+                    self.quadrotor_twist.angular.x, self.quadrotor_twist.angular.y, self.quadrotor_twist.angular.z])
+        
+        # External parameters for trajectory and slack or tau 
+        param = np.zeros((X.shape[0] + 4 + 1, ))
+        param[-1] = 1.0
 
-        # Internal states of the payload
-        w_t = np.array([self.payload_pose.position.x, self.payload_pose.position.y, self.payload_pose.position.z])
+        # Set Control Actions to zero
+        U = np.zeros((4, ))
 
-        q_wc = quat_multi(q_wb, self.q_bc)
-        first_part = inverse_rot(q_wc, w_t - w_t_wb)
-        second_part = inverse_rot(self.q_bc, self.b_t_bc)
-        projection_value = first_part - second_part
+        # CBF Information
+        cbf_stamped = PointStamped()
+        cbf_stamped.header.stamp = self.get_clock().now().to_msg()
+        cbf_stamped.header.frame_id = self.camera_frame
+
+        cbf_stamped.point.x = float(h_f(X))
+        cbf_stamped.point.y = 0.0
+        cbf_stamped.point.z = float(ddistance_dx_f(X)@f_x(X, U, param))
+        self.cbf_publisher.publish(cbf_stamped)
 
         # Publish the current position of the quadrotor at 100 Hz using PointStamped
         point_stamped = PointStamped()
         point_stamped.header.stamp = self.get_clock().now().to_msg()
         point_stamped.header.frame_id = self.camera_frame
-        point_stamped.point.x = float(projection_value[0,0])
-        point_stamped.point.y = float(projection_value[1,0])
-        point_stamped.point.z = float(projection_value[2,0])
+        point_stamped.point.x = float(ddistance_dx_f(X)@f_x(X, U, param)) - float(h_f(X))
+        point_stamped.point.y = 0.0
+        point_stamped.point.z = 0.0
         # Publish the quadrotor position
         self.payload_projection_publisher.publish(point_stamped)
-
-        # Compute distance to the center of the camera frame
-        distance = ca.norm_2(projection_value[0:2])
-        # CBF Information
-        cbf_stamped = PointStamped()
-        cbf_stamped.header.stamp = self.get_clock().now().to_msg()
-        cbf_stamped.header.frame_id = self.camera_frame
-        cbf_stamped.point.x = float(distance)
-        cbf_stamped.point.y = 0.0
-        cbf_stamped.point.z = -float(distance) + float(self.r_max)
-        self.cbf_publisher.publish(cbf_stamped)
         return None
 
 
