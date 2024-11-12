@@ -4,6 +4,7 @@ from rclpy.node import Node
 import numpy as np
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Pose, PointStamped, Twist
+from quadrotor_msgs.msg import TRPYCommand, PositionCommand
 from payload_flatness import rotation_casadi, rotation_inverse_casadi, quaternion_multiplication_casadi
 import casadi as ca
 from payload_flatness import export_model
@@ -13,7 +14,7 @@ from payload_flatness import export_model
 rot = rotation_casadi()
 inverse_rot = rotation_inverse_casadi()
 quat_multi = quaternion_multiplication_casadi()
-model, f_x, g_x, h_f, distance_f, dh_dx_f, ddistance_dx_f = export_model()
+model, f_x, g_x, h_f, distance_f, dh_dx_f, ddistance_dx_f, lyapunov_f = export_model()
 
 class PerceptionCBFNode(Node):
     def __init__(self):
@@ -74,11 +75,15 @@ class PerceptionCBFNode(Node):
 
         self.cbf_publisher = self.create_publisher(PointStamped, f'/{self.quadrotor_name}/payload/cbf', 10)
 
+        self.quadrotor_desired_subscriber = self.create_subscription(PositionCommand, f'/{self.quadrotor_name}/position_cmd', self.desired_callback, 10)
+
         # Init Pose ofr quadrtor and payload 
         self.quadrotor_pose = Pose()
         self.quadrotor_twist = Twist()
         self.payload_pose = Pose()
         self.payload_twist = Twist()
+
+        self.desired_values = np.zeros((24, ))
 
         # Timer to call the projection function at 100 Hz
         self.timer = self.create_timer(0.01, self.projection)
@@ -90,6 +95,35 @@ class PerceptionCBFNode(Node):
 
         self.quadrotor_twist.linear = msg.twist.twist.linear
         self.quadrotor_twist.angular = msg.twist.twist.angular
+        #self.get_logger().info(f'Updated quadrotor pose: {self.quadrotor_pose}')
+        return None
+
+    def desired_callback(self, msg):
+        # Update the quadrotor pose with data from the Odometry message
+        self.desired_values[0] = msg.points[0].position.x
+        self.desired_values[1] = msg.points[0].position.y
+        self.desired_values[2] = msg.points[0].position.z
+
+        self.desired_values[3] = msg.points[0].velocity.x
+        self.desired_values[4] = msg.points[0].velocity.y
+        self.desired_values[5] = msg.points[0].velocity.z
+
+        self.desired_values[6] = msg.points[0].position_quad.x
+        self.desired_values[7] = msg.points[0].position_quad.y
+        self.desired_values[8] = msg.points[0].position_quad.z
+
+        self.desired_values[9] = msg.points[0].velocity_quad.x
+        self.desired_values[10] = msg.points[0].velocity_quad.y
+        self.desired_values[11] = msg.points[0].velocity_quad.z
+
+        self.desired_values[12] = msg.points[0].quaternion.w
+        self.desired_values[13] = msg.points[0].quaternion.x
+        self.desired_values[14] = msg.points[0].quaternion.y
+        self.desired_values[15] = msg.points[0].quaternion.z
+
+        self.desired_values[16] = msg.points[0].angular_velocity.x
+        self.desired_values[17] = msg.points[0].angular_velocity.y
+        self.desired_values[18] = msg.points[0].angular_velocity.z
         #self.get_logger().info(f'Updated quadrotor pose: {self.quadrotor_pose}')
         return None
 
@@ -112,6 +146,7 @@ class PerceptionCBFNode(Node):
                     self.quadrotor_twist.linear.x, self.quadrotor_twist.linear.y, self.quadrotor_twist.linear.z,
                     self.quadrotor_pose.orientation.w, self.quadrotor_pose.orientation.x, self.quadrotor_pose.orientation.y, self.quadrotor_pose.orientation.z,
                     self.quadrotor_twist.angular.x, self.quadrotor_twist.angular.y, self.quadrotor_twist.angular.z])
+        X_desired = self.desired_values
         
         # External parameters for trajectory and slack or tau 
         param = np.zeros((X.shape[0] + 4 + 1, ))
@@ -136,7 +171,7 @@ class PerceptionCBFNode(Node):
         point_stamped.header.frame_id = self.camera_frame
         point_stamped.point.x = float(ddistance_dx_f(X)@f_x(X, U, param)) - float(h_f(X))
         point_stamped.point.y = 0.0
-        point_stamped.point.z = 0.0
+        point_stamped.point.z = float(lyapunov_f(X, X_desired))
         # Publish the quadrotor position
         self.payload_projection_publisher.publish(point_stamped)
         return None

@@ -17,6 +17,59 @@ quat_multi = quaternion_multiplication_casadi()
 
 EPS = 1e-4
 
+def quatTorot_c(quat):
+    # Normalized quaternion
+    q = quat
+    #q = q/(q.T@q)
+
+    q0 = q[0]
+    q1 = q[1]
+    q2 = q[2]
+    q3 = q[3]
+    Q = cs.vertcat(
+        cs.horzcat(q0**2+q1**2-q2**2-q3**2, 2*(q1*q2-q0*q3), 2*(q1*q3+q0*q2)),
+        cs.horzcat(2*(q1*q2+q0*q3), q0**2+q2**2-q1**2-q3**2, 2*(q2*q3-q0*q1)),
+        cs.horzcat(2*(q1*q3-q0*q2), 2*(q2*q3+q0*q1), q0**2+q3**2-q1**2-q2**2))
+
+    return Q
+
+def rotation_matrix_error_norm_c():
+    # Desired Quaternion
+    qd = cs.MX.sym('qd', 4, 1)
+
+    # Current quaternion
+    q = cs.MX.sym('q', 4, 1)
+
+    Rd = quatTorot_c(qd)
+    R = quatTorot_c(q)
+
+    error_matrix = (Rd.T@R - R.T@Rd)/2
+
+    vector_error = cs.vertcat(error_matrix[2, 1], error_matrix[0, 2], error_matrix[1, 0])
+
+    error_orientation_scalar_f = Function('error_orientation_scalar_f', [qd, q], [vector_error])
+
+    return error_orientation_scalar_f
+
+def rotation_matrix_error_c():
+    # Desired Quaternion
+    qd = cs.MX.sym('qd', 4, 1)
+
+    # Current quaternion
+    q = cs.MX.sym('q', 4, 1)
+
+    Rd = quatTorot_c(qd)
+    R = quatTorot_c(q)
+
+    error_matrix = R.T@Rd
+    error_matrix_f = Function('error_matrix_f', [qd, q], [error_matrix])
+
+    return error_matrix_f
+
+## Functions from casadi 
+rotation_error_norm_f = rotation_matrix_error_norm_c()
+rotation_error_f = rotation_matrix_error_c()
+
 def evaluate_quat():
     quat = MX.sym('quat', 4)
     mat = as_matrix(quat)
@@ -142,9 +195,12 @@ def export_model(g_val=9.81, return_params=False, cross_model=True, use_hybrid_m
     inertia = np.zeros((3, 3))
 
     # voxl2
-    inertia[0, 0] = 0.002404
-    inertia[1, 1] = 0.00238
-    inertia[2, 2] = 0.0028
+    ixx = 0.002404
+    iyy = 0.00238
+    izz = 0.0028
+    inertia[0, 0] = ixx
+    inertia[1, 1] = iyy
+    inertia[2, 2] = izz
     mass_quad = 0.715
     kf =  0.88e-08
     km = 1.34e-10
@@ -365,6 +421,91 @@ def export_model(g_val=9.81, return_params=False, cross_model=True, use_hybrid_m
     p_ext = ext_param
     zz = []
 
+    ## Section for lyapunov functions
+    print("--------------------------")
+    print(mass_quad)
+    J = np.array([[ixx, 0.0, 0.0], [0.0, iyy, 0.0], [0.0, 0.0, izz]])
+    eigenvalues = np.linalg.eigvals(J)
+    min_eigenvalue = np.min(eigenvalues)
+
+    # Compute Constant values for the trasnlational controller
+    c1 = 1
+    kv_min = c1 + 1/4 + 0.1
+    kp_min = (c1*(kv_min*kv_min) + 2*kv_min*c1 - c1*c1)/(mass_quad*(4*(kv_min - c1)-1))
+    kp_min = 20.0
+    print(kp_min)
+    print(kv_min)
+    print(c1)
+    print("--------------------------")
+
+    ## Compute minimiun values for the angular controller
+    c2 = 0.05
+    kw_min = (1/2)*c2 + (1/4) + 0.1
+    kr_min = c2*(kw_min*kw_min)/(min_eigenvalue*(4*(kw_min - (1/2)*c2) - 1))
+    kr_min = 20.0
+    kr_min_real = 10.0
+    print(kr_min)
+    print(kw_min)
+    print(c2)
+    print("--------------------------")
+
+    ## Compute minimum values for the controller associated to the payload trasnlational dynamics
+    c3 = 2
+    kv_min_payload = c3 + 1/4 + 0.1
+    kp_min_payload = (c3*(kv_min_payload*kv_min_payload) + 2*kv_min_payload*c3 - c3*c3)/(mass_payload*(4*(kv_min_payload - c3)-1))
+    #kp_min = 20
+    print(kp_min_payload)
+    print(kv_min_payload)
+    print(c3)
+    print("--------------------------")
+
+    ## Payload states
+    payload_position = vertcat(X[0], X[1], X[2])
+    payload_position_references = vertcat(p_ext[0:3])
+
+    payload_velocity =  vertcat(X[3], X[4], X[5])
+    payload_velocity_references = vertcat(p_ext[3:6])
+
+    # Quadrotor states
+    quad_pos_states = vertcat(X[6], X[7], X[8])
+    quad_pos_state_references = vertcat(p_ext[6:9])
+
+    quad_vel_states = vertcat(X[9], X[10], X[11])
+    quad_vel_state_references = vertcat(p_ext[9:12])
+
+    quad_angular_states = vertcat(X[16], X[17], X[18])
+    quad_angular_state_references = vertcat(p_ext[16:19])
+
+    quat = vertcat(X[12], X[13], X[14], X[15])
+    quat_references = vertcat(p_ext[12:16])
+
+    # Computing translational error of the sytem quadrotor
+    error_position_quad = quad_pos_states - quad_pos_state_references
+    error_velocity_quad = quad_vel_states - quad_vel_state_references
+
+    ## Creating lyapunov functions for trasnlation dynamics
+    lyapunov_position_quad = (1/2)*kp_min*error_position_quad.T@error_position_quad + (1/2)*mass_quad*error_velocity_quad.T@error_velocity_quad
+    lyapunov_position_quad_f = Function('lyapunov_position_quad_f', [X, p_ext], [lyapunov_position_quad]).expand()
+
+    # Computing angular error of the system quadrotor
+    angular_displacement_error = rotation_error_norm_f(quat_references, quat)
+    angular_velocity_error = quad_angular_states - rotation_error_f(quat_references, quat)@quad_angular_state_references
+
+    # Lyapunov Function angular error
+    lyapunov_orientation_quad = kr_min*angular_displacement_error.T@angular_displacement_error + (1/2)*angular_velocity_error.T@J@angular_velocity_error
+    lyapunov_orientation_quad_f = Function('lyapunov_orientation_quad_f', [X, p_ext], [lyapunov_orientation_quad]).expand()
+
+    # Computing translational error of the sytem payload
+    error_position_payload = payload_position - payload_position_references
+    error_velocity_payload = payload_velocity - payload_velocity_references
+
+    lyapunov_position_payload = (1/2)*kp_min_payload*error_position_payload.T@error_position_payload + (1/2)*mass_payload*error_velocity_payload.T@error_velocity_payload 
+    lyapunov_position_payload_f = Function('lyapunov_position_payload_f', [X, p_ext], [lyapunov_position_payload]).expand()
+
+    # Complete lyapunov function
+    lyapunov = lyapunov_position_quad + lyapunov_position_payload + lyapunov_orientation_quad
+    lyapunov_f = Function('lyapunov_f', [X, p_ext], [lyapunov]).expand()
+
     model = AcadosModel()
     model.f_impl_expr = Xdot - f_expl
     model.f_expl_expr = f_expl
@@ -375,4 +516,4 @@ def export_model(g_val=9.81, return_params=False, cross_model=True, use_hybrid_m
     model.p = p_ext
     model.name = model_name
 
-    return model, f_x, g_x, h_f, distance_f, dh_dx_f, ddistance_dx_f
+    return model, f_x, g_x, h_f, distance_f, dh_dx_f, ddistance_dx_f, lyapunov_f
